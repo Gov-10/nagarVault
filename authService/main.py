@@ -1,9 +1,9 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
 from sqlalchemy.sql import text
 from database import Users, sessionLocal
 from fastapi.responses import Response
+from pydantic import BaseModel
 import os, json, jwt, logging, time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -11,23 +11,29 @@ load_dotenv()
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 ph = PasswordHasher()
+
+
+class CreateSchema(BaseModel):
+    name: str
+    username: str
+    user_id: str
+    password: str
+    role: str
+
+
+class LoginSchema(BaseModel):
+    username: str
+    user_id: str
+    password: str
+    role: str
+
+
 def get_db():
     db=sessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-class CreateSchema(BaseModel):
-    name: str
-    user_id:str
-    role: str
-    password:str
-    username:str
-
-class LoginSchema(BaseModel):
-    username: str
-    password: str
 
 app = FastAPI()
 @app.get("/")
@@ -95,5 +101,3 @@ def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     return {"name": user.name, "username": user.username, "role": user.role, "created_at": user.created_at}
-
-
