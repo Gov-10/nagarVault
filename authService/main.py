@@ -9,7 +9,22 @@ from dotenv import load_dotenv
 load_dotenv()
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
+from pydantic import BaseModel
+
 ph = PasswordHasher()
+
+class CreateSchema(BaseModel):
+    name: str
+    username: str
+    user_id: str
+    password: str
+    role: str
+
+class LoginSchema(BaseModel):
+    username: str
+    user_id: str
+    password: str
+    role: str
 def get_db():
     db=sessionLocal()
     try:
@@ -34,7 +49,7 @@ def dbchek(db:Session=Depends(get_db)):
 @app.post("/create")
 def createUser(payload: CreateSchema, db:Session=Depends(get_db)):
     name, username, user_id, password, role = payload.name,payload.username,  payload.user_id, payload.password, payload.role
-    db_note = User(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
+    db_note = Users(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
     db.add(db_note)
     try:
         db.commit()
