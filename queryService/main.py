@@ -18,7 +18,7 @@ def get_db():
 @app.middleware("http")
 async def middle(request: Request, call_next):
     if request.url.path in EXCLUDED_PATHS:
-        await return call_next(request)
+        return await call_next(request)
     token= request.headers.get("Authorization")
     if not token:
         raise HTTPException(status_code=401, detail="no auth token provided")
