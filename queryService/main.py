@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
-import os, json, sqlglot, asyncpg
+import os, json, sqlglot, asyncpg, jwt
 import sqlglot.expressions as exp
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -50,8 +50,8 @@ def validate_sql_ast(sql: str, user_role: str):
 
 @app.post("/query")
 async def querydb(request: Request, db:Session=Depends(get_db)):
-    username, role, user_id= await request.state.username, await request.state.role, await request.state.user_id
-    user = db.query(User).filters(User.username==username, User.role==role, User.user_id==user_id).first()
+    username, role, user_id= request.state.username, request.state.role, request.state.user_id
+    user = db.query(User).filter(User.username==username, User.role==role, User.user_id==user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="no user found")
     body =await  request.json()
