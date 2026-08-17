@@ -3,15 +3,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
 from database import Users, sessionLocal
 from fastapi.responses import Response
-from pydantic import BaseModel
-import os, json, jwt, logging, time
+import os, json, jwt, logging
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-ph = PasswordHasher()
+from pydantic import BaseModel
 
+ph = PasswordHasher()
 
 class CreateSchema(BaseModel):
     name: str
@@ -20,13 +20,11 @@ class CreateSchema(BaseModel):
     password: str
     role: str
 
-
 class LoginSchema(BaseModel):
     username: str
     user_id: str
     password: str
     role: str
-
 
 def get_db():
     db=sessionLocal()
@@ -36,6 +34,7 @@ def get_db():
         db.close()
 
 app = FastAPI()
+
 @app.get("/")
 def chek():
     return {"status": "Running"}
@@ -51,7 +50,7 @@ def dbchek(db:Session=Depends(get_db)):
 
 @app.post("/create")
 def createUser(payload: CreateSchema, db:Session=Depends(get_db)):
-    name, username, user_id, password, role = payload.name,payload.username,  payload.user_id, payload.password, payload.role
+    name, username, user_id, password, role = payload.name, payload.username, payload.user_id, payload.password, payload.role
     db_note = Users(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
     db.add(db_note)
     try:
@@ -87,15 +86,18 @@ def logo(request: Request, response: Response):
     return {"message": "Logged out"}
 
 @app.get("/profile")
-def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)):
+def get_profile(request: Request, response: Response, db:Session=Depends(get_db)):
     token = request.cookies.get("session_token")
     if not token:
         raise HTTPException(status_code=401, detail="not signed in")
-    payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
-    exp = payl.get("exp")
-    if time.time() > exp:
+    try:
+        payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
         response.delete_cookie("session_token")
         raise HTTPException(status_code=401, detail="session token expired, log in again")
+    except jwt.InvalidTokenError:
+        response.delete_cookie("session_token")
+        raise HTTPException(status_code=401, detail="invalid session token")
     username, user_id, role = payl.get("username"), payl.get("user_id"), payl.get("role")
     user = db.query(Users).filter(Users.username==username, Users.user_id==user_id, Users.role==role).first()
     if not user:
