@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
 from database import Users, sessionLocal
 from fastapi.responses import Response
-import os, json, jwt, logging
+import os, json, jwt, logging, time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,7 +34,7 @@ def dbchek(db:Session=Depends(get_db)):
 @app.post("/create")
 def createUser(payload: CreateSchema, db:Session=Depends(get_db)):
     name, username, user_id, password, role = payload.name,payload.username,  payload.user_id, payload.password, payload.role
-    db_note = User(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
+    db_note = Users(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
     db.add(db_note)
     try:
         db.commit()
@@ -75,7 +75,7 @@ def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)
         raise HTTPException(status_code=401, detail="not signed in")
     payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
     exp = payl.get("exp")
-    if datetime.utcnow() > exp:
+    if time.time() > exp:
         response.delete_cookie("session_token")
         raise HTTPException(status_code=401, detail="session token expired, log in again")
     username, user_id, role = payl.get("username"), payl.get("user_id"), payl.get("role")
