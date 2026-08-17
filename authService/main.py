@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 from sqlalchemy.sql import text
 from database import Users, sessionLocal
 from fastapi.responses import Response
-import os, json, jwt, logging
+import os, json, jwt, logging, time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
@@ -31,6 +32,17 @@ def get_db():
         yield db
     finally:
         db.close()
+
+class CreateSchema(BaseModel):
+    name: str
+    user_id:str
+    role: str
+    password:str
+    username:str
+
+class LoginSchema(BaseModel):
+    username: str
+    password: str
 
 app = FastAPI()
 @app.get("/")
@@ -90,7 +102,7 @@ def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)
         raise HTTPException(status_code=401, detail="not signed in")
     payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
     exp = payl.get("exp")
-    if datetime.utcnow() > exp:
+    if time.time() > exp:
         response.delete_cookie("session_token")
         raise HTTPException(status_code=401, detail="session token expired, log in again")
     username, user_id, role = payl.get("username"), payl.get("user_id"), payl.get("role")

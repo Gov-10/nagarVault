@@ -4,5 +4,4 @@ coverage/
 *.log
 .DS_Store
 .env
-docker-compose.yml
 src/config/env.js

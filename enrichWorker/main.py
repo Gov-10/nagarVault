@@ -1,8 +1,200 @@
-import os, json
+import asyncio
+import json
+import logging
+import os
+import asyncpg
+from kafka import KafkaConsumer
 from dotenv import load_dotenv
 load_dotenv()
-from kafka import KafkaConsumer, KafkaProducer
-producer = KafkaProducer(bootstrap_servers=os.getenv("BOOTSTRAP_SERVER"), value_serializer = lambda x: json.dumps(x).encode("utf-8"))
-consumer = KafkaConsumer("ingestion-complaint", "ingestion-water", "ingestion-road", bootstrap_servers=os.getenv("BOOTSTRAP_SERVER"), value_deserializer=lambda x: json.loads(x.decode()), group_id="enrich-group")
-for msg in consumer:
-    pass
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("enrich-worker")
+
+BOOTSTRAP_SERVER = os.getenv("BOOTSTRAP_SERVER", "localhost:9092")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Match the exact topic names published by nagar-vault-backend
+TOPICS = [
+    "nmc.complaints.raw.restricted.v1",
+    "traffic.events.raw.v1",
+    "water.sensors.raw.v1",
+    "health.camps.raw.v1",
+    "ev.bus.telemetry.raw.v1",
+]
+
+
+async def insert_nmc(conn: asyncpg.Connection, event: dict):
+    payload = event.get("payload", {})
+    await conn.execute(
+        """
+        INSERT INTO nmc_complaints
+            (event_id, ward_id, category, description, status,
+             source_record_id, source_system, sensitivity, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+        ON CONFLICT DO NOTHING
+        """,
+        event.get("eventId"),
+        event.get("location", {}).get("wardId", "UNKNOWN"),
+        payload.get("category", "unknown"),
+        payload.get("description"),
+        payload.get("status", "open"),
+        event.get("sourceRecordId"),
+        event.get("sourceSystem"),
+        event.get("sensitivity", "restricted"),
+        event.get("receivedAt"),
+    )
+
+
+async def insert_traffic(conn: asyncpg.Connection, event: dict):
+    payload = event.get("payload", {})
+    await conn.execute(
+        """
+        INSERT INTO traffic_events
+            (source_record_id, ward_id, junction, severity, event_type,
+             average_speed_kmph, vehicle_count, camera_id, rain_detected,
+             occurred_at, received_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT DO NOTHING
+        """,
+        event.get("sourceRecordId"),
+        event.get("location", {}).get("wardId", "UNKNOWN"),
+        payload.get("junction"),
+        payload.get("severity", "low"),
+        event.get("eventType"),
+        payload.get("averageSpeedKmph"),
+        payload.get("vehicleCount"),
+        payload.get("cameraId"),
+        bool(payload.get("rainDetected", False)),
+        event.get("occurredAt"),
+        event.get("receivedAt"),
+    )
+
+
+async def insert_water(conn: asyncpg.Connection, event: dict):
+    payload = event.get("payload", {})
+    alert = payload.get("status", "normal") != "normal"
+    await conn.execute(
+        """
+        INSERT INTO water_sensor_readings
+            (source_record_id, sensor_id, asset_name, ward_id,
+             pressure_bar, flow_lpm, level_cm, status, alert_raised,
+             event_type, occurred_at, received_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        ON CONFLICT DO NOTHING
+        """,
+        event.get("sourceRecordId"),
+        payload.get("sensorId", "UNKNOWN"),
+        payload.get("assetName"),
+        event.get("location", {}).get("wardId", "UNKNOWN"),
+        payload.get("pressureBar"),
+        payload.get("flowLpm"),
+        payload.get("levelCm"),
+        payload.get("status", "normal"),
+        alert,
+        event.get("eventType"),
+        event.get("occurredAt"),
+        event.get("receivedAt"),
+    )
+
+
+async def insert_health(conn: asyncpg.Connection, event: dict):
+    payload = event.get("payload", {})
+    services = payload.get("services", [])
+    if isinstance(services, str):
+        services = [services]
+    await conn.execute(
+        """
+        INSERT INTO health_camp_records
+            (source_record_id, facility_name, ward_id, services,
+             capacity, registered_patients, waiting_patients,
+             average_wait_minutes, camp_status, event_type,
+             occurred_at, received_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        ON CONFLICT DO NOTHING
+        """,
+        event.get("sourceRecordId"),
+        payload.get("facilityName", "Unknown Facility"),
+        event.get("location", {}).get("wardId", "UNKNOWN"),
+        services,
+        payload.get("capacity"),
+        payload.get("registeredPatients"),
+        payload.get("waitingPatients"),
+        payload.get("averageWaitMinutes"),
+        payload.get("campStatus", "active"),
+        event.get("eventType"),
+        event.get("occurredAt"),
+        event.get("receivedAt"),
+    )
+
+
+async def insert_transport(conn: asyncpg.Connection, event: dict):
+    payload = event.get("payload", {})
+    await conn.execute(
+        """
+        INSERT INTO ev_bus_telemetry
+            (source_record_id, bus_id, route_id, ward_id,
+             speed_kmph, battery_soc, passenger_count, bus_status,
+             event_type, occurred_at, received_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT DO NOTHING
+        """,
+        event.get("sourceRecordId"),
+        payload.get("busId", "UNKNOWN"),
+        payload.get("routeId"),
+        event.get("location", {}).get("wardId", "UNKNOWN"),
+        payload.get("speedKmph"),
+        payload.get("batterySoc"),
+        payload.get("passengerCount"),
+        payload.get("status", "in-service"),
+        event.get("eventType"),
+        event.get("occurredAt"),
+        event.get("receivedAt"),
+    )
+
+
+TOPIC_HANDLERS = {
+    "nmc.complaints.raw.restricted.v1": insert_nmc,
+    "traffic.events.raw.v1": insert_traffic,
+    "water.sensors.raw.v1": insert_water,
+    "health.camps.raw.v1": insert_health,
+    "ev.bus.telemetry.raw.v1": insert_transport,
+}
+
+
+async def process_message(conn: asyncpg.Connection, topic: str, event: dict):
+    handler = TOPIC_HANDLERS.get(topic)
+    if handler is None:
+        log.warning(f"No handler for topic {topic!r}")
+        return
+    try:
+        await handler(conn, event)
+        log.info(f"[{topic}] stored sourceRecordId={event.get('sourceRecordId')!r}")
+    except Exception as exc:
+        log.error(f"[{topic}] failed to store event: {exc}")
+
+
+async def run():
+    conn = await asyncpg.connect(DATABASE_URL)
+    log.info(f"Connected to PostgreSQL. Subscribing to {len(TOPICS)} topics.")
+
+    consumer = KafkaConsumer(
+        *TOPICS,
+        bootstrap_servers=BOOTSTRAP_SERVER,
+        value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        group_id="enrich-group",
+        auto_offset_reset="earliest",
+        enable_auto_commit=True,
+    )
+
+    log.info("Listening for messages…")
+    try:
+        for msg in consumer:
+            event = msg.value
+            await process_message(conn, msg.topic, event)
+    finally:
+        consumer.close()
+        await conn.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
