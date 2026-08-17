@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 from sqlalchemy.sql import text
 from database import Users, sessionLocal
 from fastapi.responses import Response
@@ -16,6 +17,17 @@ def get_db():
         yield db
     finally:
         db.close()
+
+class CreateSchema(BaseModel):
+    name: str
+    user_id:str
+    role: str
+    password:str
+    username:str
+
+class LoginSchema(BaseModel):
+    username: str
+    password: str
 
 app = FastAPI()
 @app.get("/")
