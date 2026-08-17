@@ -1,3 +1,12 @@
 .env
 __pycache__/
 *.secret.yml
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Environment
+frontend/.env*
+!frontend/.env.example
