@@ -8,7 +8,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-class User(Base):
+class Users(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String)

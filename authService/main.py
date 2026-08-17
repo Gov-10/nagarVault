@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import text
-from database import User, sessionLocal
+from database import Users, sessionLocal
 from fastapi.responses import Response
 import os, json, jwt, logging
 from datetime import datetime, timedelta

@@ -15,7 +15,7 @@ def get_db():
     finally:
         db.close()
 
-@app.add_middleware("http")
+@app.middleware("http")
 async def middle(request: Request, call_next):
     if request.url.path in EXCLUDED_PATHS:
         await return call_next(request)
@@ -25,6 +25,7 @@ async def middle(request: Request, call_next):
     payl= jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
     request.state.username, request.state.role, request.state.user_id = payl.get("username"), payl.get("role"), payl.get("user_id")
     resp = await call_next(request)
+    return resp
 
 
 @app.get("/")

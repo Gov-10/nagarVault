@@ -7,10 +7,10 @@ load_dotenv()
 app = FastAPI()
 JAEGER_URL, QDRANT_URL = os.getenv("JAEGER_URL"), os.getenv("QDRANT_URL")
 EXCLUDED_PATHS = ["/", "/docs", "/openapi.json", "/metrics"]
-@app.add_middleware("http")
+@app.middleware("http")
 async def middle(request: Request, call_next):
     if request.url.path in EXCLUDED_PATHS:
-        await return call_next(request)
+        return await call_next(request)
     token = request.cookies.get("session_token")
     if not token:
         return JSONResponse(status_code=401, content={"detail" : "no auth token found"})
