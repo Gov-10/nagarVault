@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+python-dotenv
+PyJWT
+httpx
+qdrant-client[async]>=1.9,<2

@@ -25,6 +25,7 @@ class LoginSchema(BaseModel):
     user_id: str
     password: str
     role: str
+
 def get_db():
     db=sessionLocal()
     try:
@@ -33,6 +34,7 @@ def get_db():
         db.close()
 
 app = FastAPI()
+
 @app.get("/")
 def chek():
     return {"status": "Running"}
@@ -48,7 +50,7 @@ def dbchek(db:Session=Depends(get_db)):
 
 @app.post("/create")
 def createUser(payload: CreateSchema, db:Session=Depends(get_db)):
-    name, username, user_id, password, role = payload.name,payload.username,  payload.user_id, payload.password, payload.role
+    name, username, user_id, password, role = payload.name, payload.username, payload.user_id, payload.password, payload.role
     db_note = Users(name=name, user_id=user_id, role=role, password=ph.hash(password), username=username)
     db.add(db_note)
     try:
@@ -84,7 +86,7 @@ def logo(request: Request, response: Response):
     return {"message": "Logged out"}
 
 @app.get("/profile")
-def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)):
+def get_profile(request: Request, response: Response, db:Session=Depends(get_db)):
     token = request.cookies.get("session_token")
     if not token:
         raise HTTPException(status_code=401, detail="not signed in")
@@ -101,5 +103,3 @@ def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     return {"name": user.name, "username": user.username, "role": user.role, "created_at": user.created_at}
-
-

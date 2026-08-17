@@ -1,0 +1,259 @@
+version: "3.9"
+
+networks:
+  nagar-network:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  qdrant_storage:
+  postgres_data:
+
+services:
+
+  # ── Infrastructure ─────────────────────────────────────────────────────────
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nagar-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - nagar-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: nagar-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - nagar-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: nagar-postgres
+    environment:
+      POSTGRES_USER: nagar
+      POSTGRES_PASSWORD: nagar
+      POSTGRES_DB: nagardb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - nagar-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nagar -d nagardb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── DB Migration (runs once, applies 001_create_tables.sql) ───────────────
+
+  db-migrate:
+    image: postgres:15-alpine
+    container_name: nagar-db-migrate
+    environment:
+      PGPASSWORD: nagar
+    volumes:
+      - ./enrichWorker/migrations:/migrations:ro
+    networks:
+      - nagar-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "psql -h postgres -U nagar -d nagardb -f /migrations/001_create_tables.sql
+             && echo 'Migration complete.'"
+    restart: on-failure
+
+  # ── Schema Indexer (runs once, re-indexable via POST /reindex) ────────────
+
+  schema-indexer:
+    build:
+      context: ./schemaIndexer
+    container_name: nagar-schema-indexer
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+    networks:
+      - nagar-network
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    ports:
+      - "4005:4005"
+    restart: on-failure
+
+  # ── Enrich Worker (Kafka → PostgreSQL) ────────────────────────────────────
+
+  enrich-worker:
+    build:
+      context: ./enrichWorker
+    container_name: nagar-enrich-worker
+    environment:
+      BOOTSTRAP_SERVER: kafka:29092
+      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
+    networks:
+      - nagar-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Auth Service ─────────────────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: ./authService
+    container_name: nagar-auth
+    environment:
+      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
+      JWT_SECRET: change-me-in-production
+    ports:
+      - "4000:4000"
+    networks:
+      - nagar-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── Admin Service ─────────────────────────────────────────────────────────
+
+  admin-service:
+    build:
+      context: ./adminService
+    container_name: nagar-admin
+    environment:
+      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
+      JWT_SECRET: change-me-in-production
+      QDRANT_URL: http://qdrant:6333
+      JAEGER_URL: http://jaeger:16686
+      HTTP_INDEXER_URL: http://schema-indexer:4005
+    ports:
+      - "4001:4001"
+    networks:
+      - nagar-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      schema-indexer:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Query Service ─────────────────────────────────────────────────────────
+
+  query-service:
+    build:
+      context: ./queryService
+    container_name: nagar-query
+    environment:
+      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
+      JWT_SECRET: change-me-in-production
+    ports:
+      - "4003:4003"
+    networks:
+      - nagar-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ── SLM Query Engine ─────────────────────────────────────────────────────
+
+  slm-service:
+    build:
+      context: ./slmService
+    container_name: nagar-slm
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      QDRANT_URL: http://qdrant:6333
+      QUERY_SERVICE_URL: http://query-service:4003
+      JWT_SECRET: change-me-in-production
+    ports:
+      - "4004:4004"
+    networks:
+      - nagar-network
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      query-service:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Ingestion Backend ─────────────────────────────────────────────────────
+
+  ingestion-backend:
+    build:
+      context: ./nagar-vault-backend
+    container_name: nagar-ingestion
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_LEVEL: info
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_PUBLIC_URL: http://localhost:9000
+      MINIO_RAW_BUCKET: raw-media
+      MINIO_SENSITIVE_BUCKET: raw-sensitive-media
+      MINIO_REGION: us-east-1
+      KAFKA_ENABLED: "true"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: nagar-ingestion
+      KAFKA_TOPIC_PARTITIONS: "1"
+      PRESIGNED_URL_EXPIRY_SECONDS: "300"
+      UPLOAD_INTENT_TTL_SECONDS: "600"
+      MAX_FILE_SIZE_BYTES: "52428800"
+      MAX_FILES_PER_EVENT: "8"
+      FRONTEND_ORIGINS: http://localhost:5173
+    ports:
+      - "3000:3000"
+    networks:
+      - nagar-network
+    restart: unless-stopped
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+
+  nagar-vault-ui:
+    build:
+      context: ./nagar-vault-ui
+    container_name: nagar-ui
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+      VITE_DEMO_MODE: "false"
+    ports:
+      - "5173:5173"
+    networks:
+      - nagar-network
+    restart: unless-stopped
