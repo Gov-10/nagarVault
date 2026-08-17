@@ -88,11 +88,14 @@ def get_profile(request: Request,response: Response,  db:Session=Depends(get_db)
     token = request.cookies.get("session_token")
     if not token:
         raise HTTPException(status_code=401, detail="not signed in")
-    payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
-    exp = payl.get("exp")
-    if datetime.utcnow() > exp:
+    try:
+        payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
         response.delete_cookie("session_token")
         raise HTTPException(status_code=401, detail="session token expired, log in again")
+    except jwt.InvalidTokenError:
+        response.delete_cookie("session_token")
+        raise HTTPException(status_code=401, detail="invalid session token")
     username, user_id, role = payl.get("username"), payl.get("user_id"), payl.get("role")
     user = db.query(Users).filter(Users.username==username, Users.user_id==user_id, Users.role==role).first()
     if not user:
