@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Query
 import os, jwt, json, httpx, asyncpg
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timezone
 load_dotenv()
 app = FastAPI()
 JAEGER_URL, QDRANT_URL = os.getenv("JAEGER_URL"), os.getenv("QDRANT_URL")
+HTTP_INDEXER_URL = os.getenv("HTTP_INDEXER_URL", "http://schema-indexer:4005")
 EXCLUDED_PATHS = ["/", "/docs", "/openapi.json", "/metrics"]
 @app.middleware("http")
 async def middle(request: Request, call_next):
@@ -14,12 +15,15 @@ async def middle(request: Request, call_next):
     token = request.cookies.get("session_token")
     if not token:
         return JSONResponse(status_code=401, content={"detail" : "no auth token found"})
-    payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+    try:
+        payl = jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        return JSONResponse(status_code=401, content={"detail": "token expired"})
+    except jwt.InvalidTokenError:
+        return JSONResponse(status_code=401, content={"detail": "invalid token"})
     role = payl.get("role")
     if role != "admin":
         return JSONResponse(status_code=403, content={"detail": "not allowed to view this page"})
-    if datetime.utcnow() > payl.get("exp"):
-        return JSONResponse(status_code=401, content={"detail": "token expired"})
     resp = await call_next(request)
     return resp
 
@@ -60,7 +64,16 @@ async def get_audit(limit: int= Query(50, le=200), status_filter: str= Query(Non
 
 @app.post("/vector/resync")
 async def trigger():
-    return {"status": "success", "message": "Schema re-indexing task queued for Qdrant."}
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        try:
+            resp = await client.post(f"{HTTP_INDEXER_URL}/reindex")
+            resp.raise_for_status()
+            body = resp.json()
+            return {"status": "success", "message": "Schema re-indexing complete.", "chunks_indexed": body.get("chunks_indexed", 0)}
+        except httpx.ConnectError:
+            raise HTTPException(status_code=503, detail="Schema indexer is unreachable.")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Re-index failed: {str(exc)}")
 
 @app.post("/dlq")
 async def list_dlq():
@@ -71,10 +84,7 @@ async def list_dlq():
 async def get_slow(min_duration: int=500):
     async with httpx.AsyncClient(timeout=5.0) as client:
         try:
-            resp = await client.get(f"{JAEGER_URL}/api/traces", params={"service": "query-service", "minDuration": f"{min_duration_ms}ms", "limit": 20})
+            resp = await client.get(f"{JAEGER_URL}/api/traces", params={"service": "query-service", "minDuration": f"{min_duration}ms", "limit": 20})
             return resp.json()
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to query Jaeger trace engine: {str(e)}")
-
-
-
