@@ -1,3 +1,4 @@
 .env
 __pycache__/
 *.secret.yml
+node_modules/
