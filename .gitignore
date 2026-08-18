@@ -73,3 +73,6 @@ Desktop.ini
 *.log
 logs/
 coverage/
+
+node_modules/
+
