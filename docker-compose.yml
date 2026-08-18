@@ -20,7 +20,7 @@ services:
     networks:
       - nagar-network
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -156,10 +156,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    entrypoint: >
-      sh -c "psql -h postgres -U nagar -d nagardb -f /migrations/001_create_tables.sql
-             && echo 'Migration complete.'"
-    restart: on-failure
+    entrypoint:
+      - sh 
+      - -c 
+      - "psql -h postgres -U nagar -d nagardb -f /migrations/001_create_tables.sql"
+    restart: "no"
 
   schema-indexer:
     build:
