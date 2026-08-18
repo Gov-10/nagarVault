@@ -2,10 +2,95 @@
 
 import { useState, useRef } from "react";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  text: string;
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type AssistantPayload =
+  | { kind: "result"; sql: string; data: Record<string, unknown>[]; row_count: number }
+  | { kind: "error"; message: string };
+
+type ChatMessage =
+  | { role: "user"; text: string }
+  | { role: "assistant"; payload: AssistantPayload };
+
+/** Shape returned by the SLMService /ask endpoint */
+interface SlmResponse {
+  question?: string;
+  sql?: string;
+  row_count?: number;
+  data?: Record<string, unknown>[];
+  schema_chunks_used?: number;
+  model?: string;
+  detail?: string;
+  [key: string]: unknown;
 }
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+function AssistantBubble({ payload }: { payload: AssistantPayload }) {
+  if (payload.kind === "error") {
+    return <p className="text-red-400">{payload.message}</p>;
+  }
+
+  const { sql, data } = payload;
+  const MAX_ROWS = 500;
+  const columns = data.length > 0 ? Object.keys(data[0]) : [];
+  const visibleRows = data.slice(0, MAX_ROWS);
+  const truncated = data.length > MAX_ROWS;
+
+  return (
+    <div className="space-y-3">
+      {/* SQL block */}
+      <pre className="bg-neutral-950 text-green-400 text-xs rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
+        <code>{sql}</code>
+      </pre>
+
+      {/* Results */}
+      {data.length === 0 ? (
+        <p className="text-gray-400 text-sm italic">No results found</p>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-xs border-collapse">
+              <thead>
+                <tr>
+                  {columns.map((col) => (
+                    <th
+                      key={col}
+                      className="border border-blue-800 bg-blue-900/60 px-3 py-1 text-left text-blue-200 font-semibold whitespace-nowrap"
+                    >
+                      {col}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((row, rowIdx) => (
+                  <tr key={rowIdx} className={rowIdx % 2 === 0 ? "bg-neutral-800/50" : "bg-neutral-700/30"}>
+                    {columns.map((col) => (
+                      <td
+                        key={col}
+                        className="border border-neutral-700 px-3 py-1 text-gray-300 whitespace-nowrap"
+                      >
+                        {String(row[col] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {truncated && (
+            <p className="text-yellow-400 text-xs">
+              Showing first {MAX_ROWS} of {data.length} rows
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Page component ─────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [message, setMessage] = useState("");
@@ -32,15 +117,46 @@ export default function Home() {
           body: JSON.stringify({ question: text }),
         }
       );
-      const data = await res.json() as { sql?: string; [key: string]: unknown };
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: data.sql ?? JSON.stringify(data) },
-      ]);
+
+      if (!res.ok) {
+        // Try to extract a detail message from the error body
+        let errMsg = "Error reaching the service. Please try again.";
+        try {
+          const errBody = await res.json() as SlmResponse;
+          if (typeof errBody.detail === "string" && errBody.detail) {
+            errMsg = errBody.detail;
+          }
+        } catch {
+          // ignore parse errors
+        }
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", payload: { kind: "error", message: errMsg } },
+        ]);
+        return;
+      }
+
+      const data = await res.json() as SlmResponse;
+
+      // Build typed payload from the SLMService response shape
+      const payload: AssistantPayload =
+        typeof data.sql === "string"
+          ? {
+              kind: "result",
+              sql: data.sql,
+              data: Array.isArray(data.data) ? data.data : [],
+              row_count: typeof data.row_count === "number" ? data.row_count : 0,
+            }
+          : { kind: "error", message: "Error reaching the service. Please try again." };
+
+      setMessages((prev) => [...prev, { role: "assistant", payload }]);
     } catch {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: "Error reaching the service. Please try again." },
+        {
+          role: "assistant",
+          payload: { kind: "error", message: "Error reaching the service. Please try again." },
+        },
       ]);
     }
   };
@@ -110,7 +226,11 @@ export default function Home() {
                       : "bg-neutral-800 text-gray-200"
                   }`}
                 >
-                  {msg.text}
+                  {msg.role === "user" ? (
+                    msg.text
+                  ) : (
+                    <AssistantBubble payload={msg.payload} />
+                  )}
                 </div>
               </div>
             ))}
