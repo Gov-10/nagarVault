@@ -5,13 +5,9 @@ import { markAttachmentsCommitted, verifyUploadedAttachments } from "./upload.se
 import { topicForDepartment } from "./topic-router.js";
 
 export async function acceptEvent(request) {
-  const existing = eventStore.getBySource(request.sourceSystem, request.sourceRecordId);
+  const existing = await eventStore.getBySource(request.sourceSystem, request.sourceRecordId);
   if (existing) {
-    return {
-      duplicate: true,
-      topic: topicForDepartment(existing.department),
-      event: existing,
-    };
+    return { duplicate: true, topic: topicForDepartment(existing.department), event: existing };
   }
 
   const verifiedAttachments = await verifyUploadedAttachments(request);
@@ -19,20 +15,10 @@ export async function acceptEvent(request) {
   const receivedAt = new Date().toISOString();
   const topic = topicForDepartment(request.department);
 
-  const event = {
-    ...request,
-    eventId,
-    receivedAt,
-    attachments: verifiedAttachments,
-  };
-
+  const event = { ...request, eventId, receivedAt, attachments: verifiedAttachments };
   await publishEvent(topic, event);
-  eventStore.save(event);
-  markAttachmentsCommitted(verifiedAttachments, eventId);
+  await eventStore.save(event);
+  await markAttachmentsCommitted(verifiedAttachments, eventId);
 
-  return {
-    duplicate: false,
-    topic,
-    event,
-  };
+  return { duplicate: false, topic, event };
 }

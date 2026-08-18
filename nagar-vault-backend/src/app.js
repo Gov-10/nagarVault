@@ -10,6 +10,7 @@ import { uploadRouter } from "./routes/upload.routes.js";
 import { eventRouter } from "./routes/event.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler.js";
+import { authMiddleware } from "./middleware/auth.js";
 
 export const app = express();
 
@@ -59,8 +60,8 @@ app.get("/", (req, res) => {
 });
 
 app.use(healthRouter);
-app.use("/api/v1/uploads", uploadRouter);
-app.use("/api/v1/events", eventRouter);
+app.use("/api/v1/uploads", authMiddleware, uploadRouter);
+app.use("/api/v1/events", authMiddleware, eventRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

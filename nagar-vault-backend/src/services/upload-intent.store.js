@@ -1,45 +1,31 @@
+import { redis } from "../clients/redis.client.js";
 import { env } from "../config/env.js";
 
-class UploadIntentStore {
-  #items = new Map();
-  #cleanupTimer;
+const KEY_PREFIX = "upload-intent:";
 
-  constructor() {
-    this.#cleanupTimer = setInterval(() => this.cleanup(), 60_000);
-    this.#cleanupTimer.unref();
-  }
-
-  create(intent) {
-    this.#items.set(intent.attachmentId, { ...intent });
+export const uploadIntentStore = {
+  async create(intent) {
+    const key = `${KEY_PREFIX}${intent.attachmentId}`;
+    await redis.set(key, JSON.stringify(intent), "EX", env.UPLOAD_INTENT_TTL_SECONDS);
     return this.get(intent.attachmentId);
-  }
+  },
 
-  get(attachmentId) {
-    const item = this.#items.get(attachmentId);
-    return item ? { ...item } : null;
-  }
+  async get(attachmentId) {
+    const raw = await redis.get(`${KEY_PREFIX}${attachmentId}`);
+    return raw ? JSON.parse(raw) : null;
+  },
 
-  update(attachmentId, patch) {
-    const current = this.#items.get(attachmentId);
+  async update(attachmentId, patch) {
+    const current = await this.get(attachmentId);
     if (!current) return null;
     const updated = { ...current, ...patch, updatedAt: new Date().toISOString() };
-    this.#items.set(attachmentId, updated);
-    return { ...updated };
-  }
+    // Preserve remaining TTL; fall back to full TTL if key has no expiry
+    const ttl = await redis.ttl(`${KEY_PREFIX}${attachmentId}`);
+    const effectiveTtl = ttl > 0 ? ttl : env.UPLOAD_INTENT_TTL_SECONDS;
+    await redis.set(`${KEY_PREFIX}${attachmentId}`, JSON.stringify(updated), "EX", effectiveTtl);
+    return updated;
+  },
 
-  cleanup(now = Date.now()) {
-    const ttlMilliseconds = env.UPLOAD_INTENT_TTL_SECONDS * 1000;
-    for (const [id, item] of this.#items.entries()) {
-      const createdAt = new Date(item.createdAt).getTime();
-      if (now - createdAt > ttlMilliseconds) {
-        this.#items.delete(id);
-      }
-    }
-  }
-
-  stop() {
-    clearInterval(this.#cleanupTimer);
-  }
-}
-
-export const uploadIntentStore = new UploadIntentStore();
+  // No-op: Redis connection lifecycle is managed by redis.client.js
+  stop() {},
+};

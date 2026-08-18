@@ -8,16 +8,13 @@ volumes:
   ollama_data:
   qdrant_storage:
   postgres_data:
+  kafka_data:
 
 services:
-
-  # ── Infrastructure ─────────────────────────────────────────────────────────
 
   ollama:
     image: ollama/ollama:latest
     container_name: nagar-ollama
-    ports:
-      - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     networks:
@@ -33,9 +30,6 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: nagar-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     networks:
@@ -47,10 +41,8 @@ services:
     container_name: nagar-postgres
     environment:
       POSTGRES_USER: nagar
-      POSTGRES_PASSWORD: nagar
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: nagardb
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -63,13 +55,51 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # ── DB Migration (runs once, applies 001_create_tables.sql) ───────────────
+  kafka:
+    image: apache/kafka:latest
+    container_name: nagar-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: nagar-kafka-cluster-01
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - nagar-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: nagar-redis
+    networks:
+      - nagar-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   db-migrate:
     image: postgres:15-alpine
     container_name: nagar-db-migrate
     environment:
-      PGPASSWORD: nagar
+      PGPASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ./enrichWorker/migrations:/migrations:ro
     networks:
@@ -81,8 +111,6 @@ services:
       sh -c "psql -h postgres -U nagar -d nagardb -f /migrations/001_create_tables.sql
              && echo 'Migration complete.'"
     restart: on-failure
-
-  # ── Schema Indexer (runs once, re-indexable via POST /reindex) ────────────
 
   schema-indexer:
     build:
@@ -102,15 +130,13 @@ services:
       - "4005:4005"
     restart: on-failure
 
-  # ── Enrich Worker (Kafka → PostgreSQL) ────────────────────────────────────
-
   enrich-worker:
     build:
       context: ./enrichWorker
     container_name: nagar-enrich-worker
     environment:
       BOOTSTRAP_SERVER: kafka:29092
-      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
+      DATABASE_URL: postgresql://nagar:${POSTGRES_PASSWORD}@postgres:5432/nagardb
     networks:
       - nagar-network
     depends_on:
@@ -118,17 +144,17 @@ services:
         condition: service_healthy
       db-migrate:
         condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
-
-  # ── Auth Service ─────────────────────────────────────────────────────────
 
   auth-service:
     build:
       context: ./authService
     container_name: nagar-auth
     environment:
-      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
-      JWT_SECRET: change-me-in-production
+      DATABASE_URL: postgresql://nagar:${POSTGRES_PASSWORD}@postgres:5432/nagardb
+      JWT_SECRET: ${JWT_SECRET}
     ports:
       - "4000:4000"
     networks:
@@ -140,18 +166,17 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # ── Admin Service ─────────────────────────────────────────────────────────
-
   admin-service:
     build:
       context: ./adminService
     container_name: nagar-admin
     environment:
-      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
-      JWT_SECRET: change-me-in-production
+      DATABASE_URL: postgresql://nagar:${POSTGRES_PASSWORD}@postgres:5432/nagardb
+      JWT_SECRET: ${JWT_SECRET}
       QDRANT_URL: http://qdrant:6333
       JAEGER_URL: http://jaeger:16686
       HTTP_INDEXER_URL: http://schema-indexer:4005
+      BOOTSTRAP_SERVERS: kafka:29092
     ports:
       - "4001:4001"
     networks:
@@ -165,15 +190,13 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ── Query Service ─────────────────────────────────────────────────────────
-
   query-service:
     build:
       context: ./queryService
     container_name: nagar-query
     environment:
-      DATABASE_URL: postgresql://nagar:nagar@postgres:5432/nagardb
-      JWT_SECRET: change-me-in-production
+      DATABASE_URL: postgresql://nagar:${POSTGRES_PASSWORD}@postgres:5432/nagardb
+      JWT_SECRET: ${JWT_SECRET}
     ports:
       - "4003:4003"
     networks:
@@ -185,8 +208,6 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # ── SLM Query Engine ─────────────────────────────────────────────────────
-
   slm-service:
     build:
       context: ./slmService
@@ -195,7 +216,7 @@ services:
       OLLAMA_URL: http://ollama:11434
       QDRANT_URL: http://qdrant:6333
       QUERY_SERVICE_URL: http://query-service:4003
-      JWT_SECRET: change-me-in-production
+      JWT_SECRET: ${JWT_SECRET}
     ports:
       - "4004:4004"
     networks:
@@ -209,8 +230,6 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ── Ingestion Backend ─────────────────────────────────────────────────────
-
   ingestion-backend:
     build:
       context: ./nagar-vault-backend
@@ -222,8 +241,8 @@ services:
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_PUBLIC_URL: http://localhost:9000
       MINIO_RAW_BUCKET: raw-media
       MINIO_SENSITIVE_BUCKET: raw-sensitive-media
@@ -237,13 +256,18 @@ services:
       MAX_FILE_SIZE_BYTES: "52428800"
       MAX_FILES_PER_EVENT: "8"
       FRONTEND_ORIGINS: http://localhost:5173
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: redis://redis:6379
     ports:
       - "3000:3000"
     networks:
       - nagar-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
-
-  # ── Frontend ──────────────────────────────────────────────────────────────
 
   nagar-vault-ui:
     build:

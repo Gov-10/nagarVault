@@ -43,7 +43,14 @@ async def middle(request: Request, call_next):
     if not token:
         return JSONResponse(status_code=401, content={"detail": "no auth token provided"})
     try:
-        payl = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        payl = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
+            issuer="nagar-auth",
+            audience="nagar-services",
+            options={"require": ["iss", "aud"]},
+        )
     except jwt.ExpiredSignatureError:
         return JSONResponse(status_code=401, content={"detail": "token expired"})
     except jwt.InvalidTokenError:

@@ -32,7 +32,7 @@ export async function createUploadTargets(request) {
 
       const uploadUrl = await createPresignedPutUrl(bucket, objectKey);
 
-      uploadIntentStore.create({
+      await uploadIntentStore.create({
         attachmentId,
         department: request.department,
         eventType: request.eventType,
@@ -63,8 +63,8 @@ export async function createUploadTargets(request) {
   );
 }
 
-export function getUploadIntentForApi(attachmentId) {
-  const intent = uploadIntentStore.get(attachmentId);
+export async function getUploadIntentForApi(attachmentId) {
+  const intent = await uploadIntentStore.get(attachmentId);
   if (!intent) return null;
   return {
     attachmentId: intent.attachmentId,
@@ -78,7 +78,7 @@ export function getUploadIntentForApi(attachmentId) {
 }
 
 async function verifyOneAttachment(event, attachment) {
-  const intent = uploadIntentStore.get(attachment.attachmentId);
+  const intent = await uploadIntentStore.get(attachment.attachmentId);
 
   assert(
     intent,
@@ -141,7 +141,7 @@ async function verifyOneAttachment(event, attachment) {
     );
   }
 
-  uploadIntentStore.update(intent.attachmentId, {
+  await uploadIntentStore.update(intent.attachmentId, {
     status: "VERIFIED",
     verifiedAt: new Date().toISOString(),
     etag: actualEtag,
@@ -165,9 +165,9 @@ export async function verifyUploadedAttachments(event) {
   );
 }
 
-export function markAttachmentsCommitted(attachments, eventId) {
+export async function markAttachmentsCommitted(attachments, eventId) {
   for (const attachment of attachments) {
-    uploadIntentStore.update(attachment.attachmentId, {
+    await uploadIntentStore.update(attachment.attachmentId, {
       status: "COMMITTED",
       eventId,
       committedAt: new Date().toISOString(),

@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import os, json, sqlglot, asyncpg, jwt
 import sqlglot.expressions as exp
 from sqlalchemy.orm import Session
@@ -6,10 +8,23 @@ from dotenv import load_dotenv
 from database import sessionLocal, User
 load_dotenv()
 from sqlalchemy.sql import text
-app = FastAPI()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.db_pool = await asyncpg.create_pool(
+        os.getenv("DATABASE_URL"), min_size=2, max_size=10
+    )
+    yield
+    await app.state.db_pool.close()
+
+
+app = FastAPI(lifespan=lifespan)
+
 EXCLUDED_PATHS = ["/", "/docs", "/openapi.json"]
+
 def get_db():
-    db= sessionLocal()
+    db = sessionLocal()
     try:
         yield db
     finally:
@@ -19,11 +34,25 @@ def get_db():
 async def middle(request: Request, call_next):
     if request.url.path in EXCLUDED_PATHS:
         return await call_next(request)
-    token= request.headers.get("Authorization")
+    token = request.headers.get("Authorization")
     if not token:
-        raise HTTPException(status_code=401, detail="no auth token provided")
-    payl= jwt.decode(token, os.getenv("JWT_SECRET"), algorithms=["HS256"])
-    request.state.username, request.state.role, request.state.user_id = payl.get("username"), payl.get("role"), payl.get("user_id")
+        return JSONResponse(status_code=401, content={"detail": "no auth token provided"})
+    try:
+        payl = jwt.decode(
+            token,
+            os.getenv("JWT_SECRET"),
+            algorithms=["HS256"],
+            issuer="nagar-auth",
+            audience="nagar-services",
+            options={"require": ["iss", "aud"]},
+        )
+    except jwt.ExpiredSignatureError:
+        return JSONResponse(status_code=401, content={"detail": "token expired"})
+    except jwt.InvalidTokenError:
+        return JSONResponse(status_code=401, content={"detail": "invalid token"})
+    request.state.username = payl.get("username")
+    request.state.role = payl.get("role")
+    request.state.user_id = payl.get("user_id")
     resp = await call_next(request)
     return resp
 
@@ -33,6 +62,7 @@ def chek():
     return {"status": "Running"}
 
 FORBIDDEN_COLUMNS = {"name", "phone", "email", "address", "aadhaar"}
+
 def validate_sql_ast(sql: str, user_role: str):
     try:
         parsed = sqlglot.parse_one(sql)
@@ -42,35 +72,37 @@ def validate_sql_ast(sql: str, user_role: str):
         raise HTTPException(status_code=403, detail="Security Risk: Only SELECT queries are permitted.")
     for column in parsed.find_all(exp.Column):
         if column.name.lower() in FORBIDDEN_COLUMNS:
-            raise HTTPException(status_code=403,detail=f"Access Denied: Query requests protected PII column '{column.name}'.")
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: Query requests protected PII column '{column.name}'.",
+            )
     tables = [table.name.lower() for table in parsed.find_all(exp.Table)]
     if "health_records" in tables and user_role != "ROLE_HEALTH_OFFICER":
         raise HTTPException(status_code=403, detail="not allowed")
     return True
 
 @app.post("/query")
-async def querydb(request: Request, db:Session=Depends(get_db)):
-    username, role, user_id= request.state.username, request.state.role, request.state.user_id
-    user = db.query(User).filter(User.username==username, User.role==role, User.user_id==user_id).first()
+async def querydb(request: Request, db: Session = Depends(get_db)):
+    username, role, user_id = request.state.username, request.state.role, request.state.user_id
+    user = db.query(User).filter(
+        User.username == username,
+        User.role == role,
+        User.user_id == user_id,
+    ).first()
     if not user:
         raise HTTPException(status_code=404, detail="no user found")
-    body =await  request.json()
+    body = await request.json()
     sql_query = body["sql_query"]
     try:
         validate_sql_ast(sql_query, role)
-        status = "ALLOWED"
     except HTTPException as e:
-        # log it to database
         raise e
-    conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-    try:
-        results = await conn.fetch(sql_query)
-        data = [dict(record) for record in results]
-    except Exception as db_err:
-        await conn.close()
-        raise HTTPException(status_code=500, detail=f"Database execution error: {str(db_err)}")
-    await conn.close()
-    # success log to db: TODO
+
+    async with request.app.state.db_pool.acquire() as conn:
+        try:
+            results = await conn.fetch(sql_query)
+            data = [dict(record) for record in results]
+        except Exception as db_err:
+            raise HTTPException(status_code=500, detail=f"Database execution error: {str(db_err)}")
+
     return {"status": "success", "row_count": len(data), "data": data}
-
-

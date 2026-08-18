@@ -29,14 +29,17 @@ uploadRouter.post(
   }),
 );
 
-uploadRouter.get("/:attachmentId", (req, res) => {
-  const intent = getUploadIntentForApi(req.params.attachmentId);
-  if (!intent) {
-    return res.status(404).json({
-      error: "UPLOAD_INTENT_NOT_FOUND",
-      message: "No upload intent exists for that attachment ID",
-      requestId: req.id,
-    });
-  }
-  return res.json(intent);
-});
+uploadRouter.get(
+  "/:attachmentId",
+  asyncHandler(async (req, res) => {
+    const intent = await getUploadIntentForApi(req.params.attachmentId);
+    if (!intent) {
+      return res.status(404).json({
+        error: "UPLOAD_INTENT_NOT_FOUND",
+        message: "No upload intent exists for that attachment ID",
+        requestId: req.id,
+      });
+    }
+    return res.json(intent);
+  }),
+);
