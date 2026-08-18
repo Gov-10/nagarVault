@@ -1,6 +1,6 @@
 # NagarVault Common Ingestion Service
 
-Node.js/Express backend for the NagarVault mock-data page. It implements the exact presigned upload contract used by `nagar-vault-ui/src/api/ingestion.js`.
+Node.js/Express backend for the NagarVault ingestion pipeline. It handles presigned MinIO upload URLs and Kafka event publishing, backed by Redis for durable deduplication.
 
 ## What it does
 
@@ -14,9 +14,32 @@ Browser -> PUT presigned URL -> MinIO
 Browser -> POST /api/v1/events with object references -> API -> Kafka
 ```
 
-The API never proxies image, audio, or video bytes. It validates upload intents, verifies that each object exists in MinIO, and publishes only durable `bucket`/`objectKey` references to Kafka.
+The API never proxies image, audio, or video bytes. It validates upload intents, verifies that each object exists in MinIO (size + ETag check), and publishes only durable `bucket`/`objectKey` references to Kafka.
 
-> This is a local development/hackathon service. It intentionally has no login. Use synthetic data only.
+## Authentication
+
+All `/api/v1/*` routes require a valid JWT. Include it as:
+- `Authorization: Bearer <token>` header, **or**
+- `session_token` cookie (set by the auth service on login)
+
+Unauthenticated requests receive `HTTP 401`.
+
+To get a token, log in via the auth service:
+
+```bash
+curl -c cookies.txt -X POST http://localhost:4000/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "admin", "user_id": "admin-001", "password": "<your-password>"}'
+```
+
+If no admin user exists yet, seed one first:
+
+```bash
+cd authService
+
+# Make sure DATABASE_URL is set in your .env
+python seed_admin.py --username admin --password <your-strong-password> --user-id admin-001
+```
 
 ## Services and ports
 
@@ -25,26 +48,20 @@ The API never proxies image, audio, or video bytes. It validates upload intents,
 | Ingestion API | http://localhost:3000 |
 | MinIO S3 API | http://localhost:9000 |
 | MinIO Console | http://localhost:9001 |
-| Kafka host listener | localhost:9092 |
 | React frontend | http://localhost:5173 |
 
-MinIO Console credentials:
-
-```text
-Username: minioadmin
-Password: minioadmin
-```
+MinIO credentials are set via your root `.env` file (`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`).
 
 ## Fastest setup: Docker Compose
 
-Prerequisites: Docker Desktop with Docker Compose.
+Prerequisites: Docker Desktop with Docker Compose, and a root `.env` file at the repository root (see the main README for setup).
 
 ```bash
-cd nagar-vault-backend
+# From the repo root
 docker compose up --build
 ```
 
-This starts MinIO, creates `raw-media` and `raw-sensitive-media`, applies browser CORS, starts a single-node Kafka broker, creates Kafka topics, and starts the API.
+This starts MinIO, Redis, Kafka, creates topics and buckets, and starts the ingestion API.
 
 Check:
 
@@ -71,7 +88,7 @@ Stop services:
 docker compose down
 ```
 
-Remove all MinIO/Kafka development data:
+Remove all MinIO/Kafka/Redis development data:
 
 ```bash
 docker compose down -v
@@ -82,13 +99,14 @@ docker compose down -v
 Start only infrastructure:
 
 ```bash
-docker compose up -d minio minio-init kafka
+docker compose up -d minio minio-init kafka redis
 ```
 
 Then run the API on the host:
 
 ```bash
-cp .env.example .env
+cd nagar-vault-backend
+cp .env.example .env   # fill in JWT_SECRET, MinIO creds, Redis URL
 npm install
 npm run dev
 ```
@@ -116,6 +134,7 @@ npm run dev
 ```http
 POST /api/v1/uploads/presign
 Content-Type: application/json
+Authorization: Bearer <token>
 ```
 
 ```json
@@ -169,6 +188,7 @@ The PUT goes directly to MinIO. The exact `Content-Type` returned by the API mus
 ```http
 POST /api/v1/events
 Content-Type: application/json
+Authorization: Bearer <token>
 ```
 
 ```json
@@ -216,11 +236,12 @@ Use the same `/api/v1/events` endpoint with:
 
 See `examples/complaint-no-files.json` and `examples/requests.http`.
 
-Test a JSON-only complaint:
+Test a JSON-only complaint (replace `<token>` with your JWT):
 
 ```bash
 curl -i http://localhost:3000/api/v1/events \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
   --data-binary @examples/complaint-no-files.json
 ```
 
@@ -236,7 +257,7 @@ health.camps.raw.v1
 ev.bus.telemetry.raw.v1
 ```
 
-Watch complaint events:
+Watch complaint events (run from inside the stack — Kafka port is not exposed to the host in production):
 
 ```bash
 docker exec -it nagar-vault-kafka \
@@ -245,6 +266,14 @@ docker exec -it nagar-vault-kafka \
   --topic nmc.complaints.raw.restricted.v1 \
   --from-beginning
 ```
+
+To access Kafka from the host during development, start the stack with the dev overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+Then connect to `localhost:29092`.
 
 ## MinIO setup
 
@@ -287,9 +316,9 @@ docker compose up --build
 - Request IDs and structured logs
 - Graceful Kafka shutdown
 
-## Development limitation
+## Persistence
 
-Upload intents and accepted events are currently held in memory. Restarting the API clears them. This is suitable for mock-data injection. Replace `upload-intent.store.js` and `event.store.js` with PostgreSQL or Redis for production. Use an outbox table for reliable Kafka publication.
+Upload intents and accepted events are stored in Redis (key prefix `upload-intent:` and `event:id:` / `event:src:`). Redis provides automatic TTL-based expiry for upload intents and consistent deduplication across restarts and replicas. The Redis service is started automatically by Docker Compose.
 
 ## Troubleshooting
 

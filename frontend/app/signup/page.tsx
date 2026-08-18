@@ -34,13 +34,34 @@ export default function SignupPage() {
     else setStrength("Strong");
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert(
-      `Signup successful!\nFull Name: ${formData.fullname}\nUsername: ${formData.username}\nUser ID: ${formData.userid}\nRole: ${formData.role}`
-    );
-    setFormData({ fullname: "", username: "", userid: "", password: "", role: "" });
-    setStrength("");
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_AUTH_SERVICE_URL}/create`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: formData.fullname,
+            username: formData.username,
+            user_id: formData.userid,
+            password: formData.password,
+            role: formData.role,
+          }),
+        }
+      );
+      if (res.ok) {
+        alert("Signup successful! You can now log in.");
+        setFormData({ fullname: "", username: "", userid: "", password: "", role: "" });
+        setStrength("");
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(`Signup failed: ${(data as { detail?: string }).detail ?? "Please try again."}`);
+      }
+    } catch {
+      alert("Unable to reach the auth service. Please try again later.");
+    }
   };
 
   return (
@@ -116,7 +137,6 @@ export default function SignupPage() {
         >
           <option value="">Select Role</option>
           <option value="User">User</option>
-          <option value="Admin">Admin</option>
         </select>
 
         <button

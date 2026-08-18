@@ -33,14 +33,17 @@ eventRouter.post(
   }),
 );
 
-eventRouter.get("/:eventId", (req, res) => {
-  const event = eventStore.getById(req.params.eventId);
-  if (!event) {
-    return res.status(404).json({
-      error: "EVENT_NOT_FOUND",
-      message: "No event exists for that ID in the local event store",
-      requestId: req.id,
-    });
-  }
-  return res.json(event);
-});
+eventRouter.get(
+  "/:eventId",
+  asyncHandler(async (req, res) => {
+    const event = await eventStore.getById(req.params.eventId);
+    if (!event) {
+      return res.status(404).json({
+        error: "EVENT_NOT_FOUND",
+        message: "No event exists for that ID in the event store",
+        requestId: req.id,
+      });
+    }
+    return res.json(event);
+  }),
+);

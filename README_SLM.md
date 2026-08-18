@@ -134,25 +134,28 @@ The response `message.content` should contain something like `SELECT COUNT(*) FR
 
 ### 3a. Configure environment files
 
-Copy the example env files for the two new services:
+Copy the root `.env.example` and fill in real values:
+
+```bash
+cp .env.example .env
+```
+
+Generate a strong `JWT_SECRET`:
+
+```bash
+openssl rand -hex 32
+```
+
+The `JWT_SECRET` must match across all services — auth, admin, query, slm, and ingestion-backend all read it from the same root `.env` when using Docker Compose.
+
+For services running outside Docker during development, copy their individual example files:
 
 ```bash
 cp slmService/.env.example slmService/.env
 cp schemaIndexer/.env.example schemaIndexer/.env
 ```
 
-The defaults work for local Docker Compose. The only value you may need to change is `JWT_SECRET` — it must match across all services.
-
-For the SLM service, `slmService/.env` should look like:
-
-```
-OLLAMA_URL=http://ollama:11434
-QDRANT_URL=http://qdrant:6333
-QUERY_SERVICE_URL=http://query-service:4003
-JWT_SECRET=change-me
-```
-
-> **Note:** When running locally with `docker compose`, `OLLAMA_URL` should point to the `ollama` container. If you run Ollama on the host and services in Docker, use `http://host.docker.internal:11434` instead.
+When running locally with `docker compose`, `OLLAMA_URL` should point to the `ollama` container (`http://ollama:11434`). If Ollama runs on the host and your services are in Docker, use `http://host.docker.internal:11434` instead.
 
 ### 3b. Start the full stack
 
@@ -226,10 +229,29 @@ The SLM service requires a valid JWT in the `Authorization` header, issued by th
 
 ### 4a. Create a test user and obtain a token
 
-First, create a user via the auth service:
+User creation requires an admin JWT. If you haven't seeded the first admin yet, do that first:
 
 ```bash
-curl -c cookies.txt -X POST http://localhost:4000/create \
+cd authService
+python seed_admin.py --username admin --password <your-strong-password> --user-id admin-001
+```
+
+Log in as admin to get a session cookie:
+
+```bash
+curl -c cookies.txt -X POST http://localhost:4000/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "admin",
+    "user_id": "admin-001",
+    "password": "<your-strong-password>"
+  }'
+```
+
+Create a test officer account using the admin cookie:
+
+```bash
+curl -b cookies.txt -X POST http://localhost:4000/create \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "Test Officer",
@@ -240,20 +262,21 @@ curl -c cookies.txt -X POST http://localhost:4000/create \
   }'
 ```
 
-Log in to get a session cookie:
+Log in as the test officer:
 
 ```bash
-curl -c cookies.txt -X POST http://localhost:4000/login \
+curl -c officer-cookies.txt -X POST http://localhost:4000/login \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "test_officer",
     "user_id": "USR-001",
-    "password": "testpassword",
-    "role": "nmc_officer"
+    "password": "testpassword"
   }'
 ```
 
-For the SLM service, you need the raw JWT token. Either extract it from the cookie, or for testing purposes, generate one directly using `JWT_SECRET` from your `.env`.
+> Note: the `role` field has been removed from the login request body. The role is now always read from the database record.
+
+For the SLM service, you need the raw JWT token. Extract it from the `session_token` cookie set by the login response, or read it from `cookies.txt`.
 
 ### 4b. Ask a natural language question
 
@@ -529,7 +552,7 @@ metadata:
   namespace: nagar
 type: Opaque
 stringData:
-  jwt-secret: "your-production-jwt-secret-minimum-32-chars"
+  jwt-secret: "<your-production-jwt-secret-minimum-32-chars>"
 ---
 apiVersion: apps/v1
 kind: Deployment

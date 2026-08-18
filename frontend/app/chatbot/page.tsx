@@ -1,17 +1,70 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+}
 
 export default function Home() {
   const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const handleSend = async () => {
+    const text = message.trim();
+    if (!text) return;
+    setMessages((prev) => [...prev, { role: "user", text }]);
+    setMessage("");
+    try {
+      // Extract session token from cookie for Authorization header
+      const tokenMatch = document.cookie.match(/(?:^|;\s*)session_token=([^;]+)/);
+      const token = tokenMatch ? tokenMatch[1] : "";
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_SLM_SERVICE_URL}/ask`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ question: text }),
+        }
+      );
+      const data = await res.json() as { sql?: string; [key: string]: unknown };
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: data.sql ?? JSON.stringify(data) },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Error reaching the service. Please try again." },
+      ]);
+    }
+  };
 
   const handleMicClick = async () => {
+    // If already recording, stop all tracks and release the mic
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      alert("Microphone access granted!");
-      console.log(stream);
+      streamRef.current = stream;
+      // TODO: wire to speech-to-text service
     } catch (err) {
-      alert("Microphone access denied!");
+      const error = err as { name?: string };
+      if (error.name === "NotAllowedError") {
+        alert("Microphone access was denied. Please allow microphone access in your browser settings.");
+      } else if (error.name === "NotFoundError") {
+        alert("No microphone device found. Please connect a microphone.");
+      } else {
+        alert("Could not access microphone. Please try again.");
+      }
     }
   };
 
@@ -30,8 +83,8 @@ export default function Home() {
 
       {/* Main area */}
       <main className="flex-1 flex flex-col justify-end items-center relative">
-        {/* Big centered welcome text (Comic Sans, disappears when typing starts) */}
-        {message === "" && (
+        {/* Welcome text shown when no messages and no input */}
+        {message === "" && messages.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center">
             <h1
               className="text-6xl font-bold text-blue-400 tracking-wide"
@@ -42,29 +95,58 @@ export default function Home() {
           </div>
         )}
 
+        {/* Message history */}
+        {messages.length > 0 && (
+          <div className="flex-1 w-full overflow-y-auto px-6 py-4 space-y-4">
+            {messages.map((msg, idx) => (
+              <div
+                key={idx}
+                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`max-w-[75%] px-4 py-2 rounded-2xl text-sm whitespace-pre-wrap ${
+                    msg.role === "user"
+                      ? "bg-blue-700 text-white"
+                      : "bg-neutral-800 text-gray-200"
+                  }`}
+                >
+                  {msg.text}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Typing area at bottom */}
         <div className="flex items-center bg-neutral-900/80 backdrop-blur-md rounded-full px-4 py-3 w-[90%] mb-6 shadow-2xl border-2 border-blue-600 ring-2 ring-blue-400/50 z-10">
           <input
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
             placeholder="Type a message..."
             className="bg-transparent flex-1 outline-none text-gray-300 placeholder-gray-500"
           />
 
           {/* Send button */}
-          <button className="ml-3 bg-blue-800 hover:bg-blue-700 text-gray-200 px-4 py-2 rounded-full transition-all shadow-md flex items-center space-x-2">
+          <button
+            onClick={handleSend}
+            className="ml-3 bg-blue-800 hover:bg-blue-700 text-gray-200 px-4 py-2 rounded-full transition-all shadow-md flex items-center space-x-2"
+          >
             <span>Send</span>
             <span>➤</span>
           </button>
 
-          {/* Mic button (messenger-style) */}
+          {/* Mic button */}
           <button
             onClick={handleMicClick}
-            className="ml-2 bg-blue-700 hover:bg-blue-600 text-white p-2 rounded-full shadow-md transition-all"
-            title="Use microphone"
+            className={`ml-2 text-white p-2 rounded-full shadow-md transition-all ${
+              streamRef.current
+                ? "bg-red-600 hover:bg-red-500"
+                : "bg-blue-700 hover:bg-blue-600"
+            }`}
+            title={streamRef.current ? "Stop recording" : "Use microphone"}
           >
-            {/* SVG mic icon */}
             <svg
               xmlns="http://www.w3.org/2000/svg"
               className="h-5 w-5"

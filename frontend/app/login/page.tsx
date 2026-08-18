@@ -7,7 +7,6 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [userId, setUserId] = useState("");
-  const [role, setRole] = useState("citizen");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -24,13 +23,13 @@ export default function LoginPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ username, password, user_id: userId, role }),
+          body: JSON.stringify({ username, password, user_id: userId }),
         }
       );
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? "Login failed. Please check your credentials.");
+        setError((data as { detail?: string }).detail ?? "Login failed. Please check your credentials.");
         return;
       }
 
@@ -80,19 +79,8 @@ export default function LoginPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-          className="w-full p-2 mb-4 rounded-md bg-neutral-800 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all hover:bg-neutral-700"
-        />
-
-        <label className="block mb-2 text-sm font-semibold">Role</label>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
           className="w-full p-2 mb-6 rounded-md bg-neutral-800 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all hover:bg-neutral-700"
-        >
-          <option value="citizen">Citizen</option>
-          <option value="admin">Admin</option>
-          <option value="official">Official</option>
-        </select>
+        />
 
         <button
           type="submit"

@@ -31,6 +31,8 @@ const envSchema = z.object({
   KAFKA_BROKERS: z.string().default("localhost:9092"),
   KAFKA_CLIENT_ID: z.string().default("nagar-vault-ingestion"),
   KAFKA_TOPIC_PARTITIONS: z.coerce.number().int().min(1).default(3),
+  JWT_SECRET: z.string().min(16),
+  REDIS_URL: z.string().url().default("redis://redis:6379"),
 });
 
 const parsed = envSchema.safeParse(process.env);
