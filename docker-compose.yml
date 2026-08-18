@@ -27,6 +27,26 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: nagar-ollama-pull
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - nagar-network
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      sh -c "
+        ollama pull bge-m3 &&
+        ollama pull qwen3:2b &&
+        echo 'ollama-pull: all models ready.'
+      "
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: nagar-qdrant
@@ -56,15 +76,15 @@ services:
     restart: unless-stopped
 
   kafka:
-    image: apache/kafka:latest
+    image: apache/kafka:4.2.0
     container_name: nagar-kafka
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -82,6 +102,35 @@ services:
       retries: 8
       start_period: 30s
     restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:4.2.0
+    container_name: nagar-kafka-init
+    networks:
+      - nagar-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      sh -c "
+        for topic in
+          health.camps.raw.v1
+          nmc.complaints.raw.restricted.v1
+          traffic.events.raw.v1
+          water.sensors.raw.v1
+          ev.bus.telemetry.raw.v1
+        ; do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:29092 \
+            --create \
+            --if-not-exists \
+            --topic $$topic \
+            --partitions 1 \
+            --replication-factor 1
+        done &&
+        echo 'kafka-init: all topics ready.'
+      "
 
   redis:
     image: redis:7-alpine
@@ -124,6 +173,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
     ports:
@@ -146,6 +197,8 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   auth-service:
@@ -224,6 +277,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
       qdrant:
         condition: service_started
       query-service:
